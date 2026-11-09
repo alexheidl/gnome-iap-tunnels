@@ -208,16 +208,16 @@ class IapTunnelsIndicator extends SystemIndicator {
             () => this._clearFailed().catch(logError));
         this._clearFailedItem.visible = false;
         this._toggle.menu.addAction(_('Sign in to Google Cloud…'), () => this._signIn().catch(logError));
-        this._toggle.menu.connect('open-state-changed', (_menu, open) => {
+        this._toggle.menu.connectObject('open-state-changed', (_menu, open) => {
             if (open)
                 this._updateAccount().catch(logError);
-        });
+        }, this);
         this._toggle.menu.addAction(_('Tunnel Settings'), () => {
             Main.panel.closeQuickSettings();
             this._extension.openPreferences();
         });
 
-        this._toggle.connect('clicked', () => this._onToggleClicked().catch(logError));
+        this._toggle.connectObject('clicked', () => this._onToggleClicked().catch(logError), this);
         this.quickSettingsItems.push(this._toggle);
 
         this._setup().catch(e => logError(e, 'iap-tunnels: setup failed'));
@@ -225,7 +225,7 @@ class IapTunnelsIndicator extends SystemIndicator {
 
     async _setup() {
         try {
-            if (Tunnels.ensureBackend(this._extension.path))
+            if (await Tunnels.ensureBackend(this._extension.path))
                 await this._sd.reload();
         } catch (e) {
             logError(e, 'iap-tunnels: could not install systemd template');
@@ -254,7 +254,9 @@ class IapTunnelsIndicator extends SystemIndicator {
         }
         this._reloading = true;
         try {
-            const configs = Tunnels.listTunnels();
+            const configs = await Tunnels.listTunnels();
+            if (this._destroyed)
+                return;
             const seen = new Set();
             for (const [index, cfg] of configs.entries()) {
                 seen.add(cfg.id);
@@ -292,7 +294,7 @@ class IapTunnelsIndicator extends SystemIndicator {
             item: new TunnelItem(),
             notified: false,
         };
-        tunnel.item.connect('toggle', () => this._toggleTunnel(tunnel).catch(logError));
+        tunnel.item.connectObject('toggle', () => this._toggleTunnel(tunnel).catch(logError), this);
         this._section.addMenuItem(tunnel.item);
         this._tunnels.set(cfg.id, tunnel);
         try {
@@ -378,10 +380,11 @@ class IapTunnelsIndicator extends SystemIndicator {
             urgency: MessageTray.Urgency.HIGH,
         });
         notification.addAction(_('Sign In'), () => this._signIn().catch(logError));
-        notification.connect('activated', () => this._signIn().catch(logError));
-        notification.connect('destroy', () => {
-            this._authNotification = null;
-        });
+        notification.connectObject(
+            'activated', () => this._signIn().catch(logError),
+            'destroy', () => {
+                this._authNotification = null;
+            }, this);
         this._authNotification = notification;
         source.addNotification(notification);
     }
@@ -418,7 +421,7 @@ class IapTunnelsIndicator extends SystemIndicator {
             this._extension.openPreferences();
             return;
         }
-        const last = this._tunnels.get(Tunnels.getLastUsed() ?? '');
+        const last = this._tunnels.get(await Tunnels.getLastUsed() ?? '');
         await this._toggleTunnel(last ?? this._tunnels.values().next().value);
     }
 

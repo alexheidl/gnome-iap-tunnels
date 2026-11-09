@@ -4,6 +4,9 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
+Gio._promisify(Gio.File.prototype, 'load_contents_async');
+Gio._promisify(Gio.File.prototype, 'enumerate_children_async');
+Gio._promisify(Gio.FileEnumerator.prototype, 'next_files_async');
 
 export const UNIT_TEMPLATE_NAME = 'iap-tunnel@.service';
 export const RUNNER_NAME = 'iap-tunnel-run';
@@ -25,10 +28,11 @@ export const unitName = id => `iap-tunnel@${id}.service`;
 
 const decoder = new TextDecoder();
 
-function readText(path) {
+/** @returns {Promise<string|null>} the file's text, or null if it can't be read */
+async function readText(path) {
     try {
-        const [ok, bytes] = GLib.file_get_contents(path);
-        return ok ? decoder.decode(bytes) : null;
+        const [bytes] = await Gio.File.new_for_path(path).load_contents_async(null);
+        return decoder.decode(bytes);
     } catch {
         return null;
     }
@@ -114,30 +118,35 @@ export function validate(id, data, existing = []) {
     return null;
 }
 
-/** @returns {Array<{id: string, label: string}>} tunnels sorted by label */
-export function listTunnels() {
+/** @returns {Promise<Array<{id: string, label: string}>>} tunnels sorted by label */
+export async function listTunnels() {
     const dir = Gio.File.new_for_path(configDir());
-    const tunnels = [];
-    let enumerator;
+    const ids = [];
     try {
-        enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+        const enumerator = await dir.enumerate_children_async('standard::name',
+            Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
+        for (;;) {
+            // eslint-disable-next-line no-await-in-loop
+            const infos = await enumerator.next_files_async(50, GLib.PRIORITY_DEFAULT, null);
+            if (infos.length === 0)
+                break;
+            for (const info of infos) {
+                const name = info.get_name();
+                if (name.endsWith('.env') && ID_PATTERN.test(name.slice(0, -4)))
+                    ids.push(name.slice(0, -4));
+            }
+        }
     } catch {
-        return tunnels;
+        return [];
     }
-    for (let info; (info = enumerator.next_file(null));) {
-        const name = info.get_name();
-        if (!name.endsWith('.env'))
-            continue;
-        const id = name.slice(0, -4);
-        if (!ID_PATTERN.test(id))
-            continue;
-        const text = readText(GLib.build_filenamev([configDir(), name]));
-        if (text === null)
-            continue;
-        const data = parseEnv(text);
+    const texts = await Promise.all(ids.map(id => readText(GLib.build_filenamev([configDir(), `${id}.env`]))));
+    const tunnels = [];
+    ids.forEach((id, i) => {
+        if (texts[i] === null)
+            return;
+        const data = parseEnv(texts[i]);
         tunnels.push({...data, id, label: data.LABEL || id});
-    }
-    enumerator.close(null);
+    });
     return tunnels.sort((a, b) => a.label.localeCompare(b.label));
 }
 
@@ -167,13 +176,13 @@ const isManaged = text => text.split('\n', 3).some(line => line.startsWith(MANAG
 
 /**
  * Copy a bundled file to target unless the target was customised (no managed marker).
- * @returns {boolean} true when the target changed
+ * @returns {Promise<boolean>} true when the target changed
  */
-function installManaged(source, target, executable) {
-    const wanted = readText(source);
+async function installManaged(source, target, executable) {
+    const wanted = await readText(source);
     if (wanted === null)
         throw new Error(`Bundled file ${source} not found`);
-    const current = readText(target);
+    const current = await readText(target);
     if (current === wanted || (current !== null && !isManaged(current)))
         return false;
     writeText(target, wanted);
@@ -187,11 +196,11 @@ function installManaged(source, target, executable) {
 /**
  * Install or update the systemd template unit and the tunnel runner script from the
  * extension's bundled copies. Customised files (managed marker removed) are left alone.
- * @returns {boolean} true when the unit changed (a daemon-reload is needed)
+ * @returns {Promise<boolean>} true when the unit changed (a daemon-reload is needed)
  */
-export function ensureBackend(extensionPath) {
+export async function ensureBackend(extensionPath) {
     const bundled = name => GLib.build_filenamev([extensionPath, 'systemd', name]);
-    installManaged(bundled(RUNNER_NAME), runnerPath(), true);
+    await installManaged(bundled(RUNNER_NAME), runnerPath(), true);
     return installManaged(bundled(UNIT_TEMPLATE_NAME),
         GLib.build_filenamev([unitDir(), UNIT_TEMPLATE_NAME]), false);
 }
@@ -202,8 +211,8 @@ export function isAutostart(id) {
         GLib.FileTest.EXISTS);
 }
 
-export function getLastUsed() {
-    return readText(stateFile())?.trim() || null;
+export async function getLastUsed() {
+    return (await readText(stateFile()))?.trim() || null;
 }
 
 export function setLastUsed(id) {

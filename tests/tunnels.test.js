@@ -52,29 +52,29 @@ check('local port clash', T.validate('vm', ok, [{id: 'other', label: 'Other', LO
 check('same tunnel keeps its port', T.validate('vm', ok, [{id: 'vm', label: 'VM', LOCAL_PORT: '2222'}]) === null);
 
 // files
-check('empty list without config dir', T.listTunnels().length === 0);
+check('empty list without config dir', (await T.listTunnels()).length === 0);
 T.saveTunnel('zeta', {...ok, LABEL: 'Zeta'});
 T.saveTunnel('alpha', {...ok, LOCAL_PORT: '3333'});
 GLib.file_set_contents(`${T.configDir()}/Not_Valid.env`, 'PROJECT=x\n');
-const list = T.listTunnels();
+const list = await T.listTunnels();
 check('list sorted by label, invalid ids ignored', eq(list.map(t => t.id), ['alpha', 'zeta']));
 check('label falls back to id', list[0].label === 'alpha');
 T.deleteTunnel('zeta');
 T.deleteTunnel('does-not-exist');
-check('delete', eq(T.listTunnels().map(t => t.id), ['alpha']));
+check('delete', eq((await T.listTunnels()).map(t => t.id), ['alpha']));
 
 // backend install (unit + runner)
 const extPath = GLib.build_filenamev([GLib.get_current_dir(), 'iap-tunnels@alexheidl.github.io']);
-check('backend installs', T.ensureBackend(extPath) === true);
-check('backend idempotent', T.ensureBackend(extPath) === false);
+check('backend installs', await T.ensureBackend(extPath) === true);
+check('backend idempotent', await T.ensureBackend(extPath) === false);
 const runner = Gio.File.new_for_path(T.runnerPath());
 check('runner installed', runner.query_exists(null));
 check('runner executable', (runner.query_info('unix::mode', 0, null).get_attribute_uint32('unix::mode') & 0o111) !== 0);
 const target = `${T.unitDir()}/${T.UNIT_TEMPLATE_NAME}`;
 GLib.file_set_contents(target, '# my own unit\n');
-check('customised template left alone', T.ensureBackend(extPath) === false);
+check('customised template left alone', await T.ensureBackend(extPath) === false);
 GLib.file_set_contents(T.runnerPath(), '#!/bin/sh\n# Managed by the IAP Tunnels GNOME extension (old)\n');
-T.ensureBackend(extPath);
+await T.ensureBackend(extPath);
 check('managed runner gets updated', !String(new TextDecoder().decode(GLib.file_get_contents(T.runnerPath())[1])).includes('(old)'));
 
 // account
@@ -84,9 +84,9 @@ check('account accepted', T.validate('vm', {...ok, ACCOUNT: 'a@b.de'}) === null)
 check('account serialized', T.parseEnv(T.serializeEnv({...ok, ACCOUNT: 'a@b.de'})).ACCOUNT === 'a@b.de');
 
 // last used
-check('no last used', T.getLastUsed() === null);
+check('no last used', await T.getLastUsed() === null);
 T.setLastUsed('alpha');
-check('last used', T.getLastUsed() === 'alpha');
+check('last used', await T.getLastUsed() === 'alpha');
 
 print(failures ? `\n${failures} failed` : '\nall passed');
 System.exit(failures ? 1 : 0);
