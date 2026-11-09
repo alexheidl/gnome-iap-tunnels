@@ -44,9 +44,13 @@ export default class IapTunnelsPreferences extends ExtensionPreferences {
         page.add(help);
 
         const rows = [];
-        const refresh = () => {
+        let generation = 0;
+        const refresh = async () => {
+            const current = ++generation;
+            const tunnels = await Tunnels.listTunnels();
+            if (current !== generation)
+                return; // a newer refresh is running
             rows.splice(0).forEach(row => group.remove(row));
-            const tunnels = Tunnels.listTunnels();
             if (tunnels.length === 0) {
                 rows.push(new Adw.ActionRow({
                     title: _('No tunnels yet'),
@@ -65,7 +69,7 @@ export default class IapTunnelsPreferences extends ExtensionPreferences {
                 GLib.source_remove(window._iapRefreshId);
             window._iapRefreshId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
                 window._iapRefreshId = 0;
-                refresh();
+                refresh().catch(logError);
                 return GLib.SOURCE_REMOVE;
             });
         });
@@ -75,7 +79,7 @@ export default class IapTunnelsPreferences extends ExtensionPreferences {
                 GLib.source_remove(window._iapRefreshId);
             return false;
         });
-        refresh();
+        refresh().catch(logError);
     }
 
     _createRow(window, tunnel) {
@@ -228,8 +232,9 @@ export default class IapTunnelsPreferences extends ExtensionPreferences {
                 ACCOUNT: accountRow.text.trim(),
                 EXTRA_ARGS: extraRow.text.trim(),
             };
-            let error = Tunnels.validate(id, data, Tunnels.listTunnels());
-            if (!error && isNew && Tunnels.listTunnels().some(t => t.id === id))
+            const existing = await Tunnels.listTunnels();
+            let error = Tunnels.validate(id, data, existing);
+            if (!error && isNew && existing.some(t => t.id === id))
                 error = _('A tunnel with ID “%s” already exists.').replace('%s', id);
             if (error) {
                 banner.title = error;
@@ -241,7 +246,7 @@ export default class IapTunnelsPreferences extends ExtensionPreferences {
             try {
                 Tunnels.saveTunnel(id, data);
                 const unit = Tunnels.unitName(id);
-                if (Tunnels.ensureBackend(this.path))
+                if (await Tunnels.ensureBackend(this.path))
                     await Tunnels.systemctl('daemon-reload');
                 if (autostartRow.active !== Tunnels.isAutostart(id))
                     await Tunnels.systemctl(autostartRow.active ? 'enable' : 'disable', unit);
@@ -249,7 +254,7 @@ export default class IapTunnelsPreferences extends ExtensionPreferences {
                 if (!isNew)
                     await Tunnels.systemctl('try-restart', unit);
                 dialog.close();
-                this._refresh?.();
+                this._refresh?.().catch(logError);
                 window.add_toast(new Adw.Toast({title: isNew ? _('Tunnel added') : _('Tunnel saved')}));
             } catch (e) {
                 banner.title = e.message;
