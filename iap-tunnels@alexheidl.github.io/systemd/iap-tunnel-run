@@ -1,0 +1,112 @@
+#!/bin/bash
+# Managed by the IAP Tunnels GNOME extension (iap-tunnels@alexheidl.github.io).
+#
+# Runs `gcloud compute start-iap-tunnel` for one tunnel (settings come from the
+# environment, i.e. ~/.config/iap-tunnels/<id>.env via the systemd unit) and
+# watches the Google sign-in. When gcloud keeps listening but every connection
+# fails because the sign-in needs reauthentication, this script stops the tunnel
+# and exits with code 75, so the unit lands in "failed" and the extension can
+# say "sign-in expired" instead of showing a dead tunnel as connected.
+#
+# Exit codes: 75 = sign-in expired (reauth needed), 64 = bad config,
+#             otherwise gcloud's own exit status.
+
+set -u
+
+readonly EXIT_AUTH=75
+readonly EXIT_CONFIG=64
+# Only errors that a new sign-in fixes; network errors must not match.
+readonly AUTH_PATTERN='Reauthentication failed|ReauthRequiredError|reauth is required|invalid_grant|Reauthentication is needed|You do not currently have an active account'
+AUTH_CHECK_INTERVAL=${AUTH_CHECK_INTERVAL:-60}
+GCLOUD=${GCLOUD:-gcloud}
+
+# Optional NumPy for gcloud's bundled Python (`make numpy`): it does the WebSocket
+# masking of uploaded data in C, cutting the tunnel's CPU use about 5x.
+PYLIB="${XDG_DATA_HOME:-$HOME/.local/share}/iap-tunnels/python"
+[ -d "$PYLIB/numpy" ] && export PYTHONPATH="$PYLIB${PYTHONPATH:+:$PYTHONPATH}"
+
+for var in INSTANCE REMOTE_PORT LOCAL_PORT ZONE PROJECT; do
+    if [ -z "${!var:-}" ]; then
+        echo "iap-tunnel: $var is not set" >&2
+        exit $EXIT_CONFIG
+    fi
+done
+
+account_args=()
+[ -n "${ACCOUNT:-}" ] && account_args=(--account="$ACCOUNT")
+read -r -a extra_args <<< "${EXTRA_ARGS:-}"
+
+# 0 = signed in, 1 = sign-in expired, 2 = could not tell (e.g. offline)
+auth_state() {
+    local err
+    err=$("$GCLOUD" auth print-access-token "${account_args[@]}" 2>&1 > /dev/null) && return 0
+    [[ $err =~ $AUTH_PATTERN ]] && return 1
+    return 2
+}
+
+auth_expired() {
+    echo "iap-tunnel: Google Cloud sign-in expired or needs reauthentication." \
+        "Sign in again (gcloud auth login${ACCOUNT:+ $ACCOUNT})." >&2
+}
+
+auth_state
+if [ $? -eq 1 ]; then
+    auth_expired
+    exit $EXIT_AUTH
+fi
+
+reauth=0
+stopping=0
+pid=
+
+on_reauth() { reauth=1; }
+on_stop() {
+    stopping=1
+    [ -n "$pid" ] && kill -TERM "$pid" 2> /dev/null
+}
+trap on_reauth USR1
+trap on_stop TERM INT
+
+# Pass gcloud's stderr through to the journal, and flag the first auth error.
+watch_stderr() {
+    local line flagged=0
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >&2
+        if [ $flagged -eq 0 ] && [[ $line =~ $AUTH_PATTERN ]]; then
+            flagged=1
+            kill -USR1 $$ 2> /dev/null
+        fi
+    done
+}
+
+"$GCLOUD" compute start-iap-tunnel "$INSTANCE" "$REMOTE_PORT" \
+    --local-host-port="localhost:$LOCAL_PORT" \
+    --zone="$ZONE" --project="$PROJECT" \
+    "${account_args[@]}" "${extra_args[@]}" 2> >(watch_stderr) &
+pid=$!
+
+while kill -0 "$pid" 2> /dev/null; do
+    # Sleep in the background so signals (USR1/TERM) interrupt the wait at once.
+    sleep "$AUTH_CHECK_INTERVAL" &
+    wait $! 2> /dev/null
+    kill "$!" 2> /dev/null
+
+    [ $stopping -eq 1 ] && break
+    kill -0 "$pid" 2> /dev/null || break
+    if [ $reauth -eq 0 ]; then
+        auth_state
+        [ $? -eq 1 ] && reauth=1
+    fi
+    if [ $reauth -eq 1 ]; then
+        auth_expired
+        kill -TERM "$pid" 2> /dev/null
+        wait "$pid" 2> /dev/null
+        exit $EXIT_AUTH
+    fi
+done
+
+wait "$pid" 2> /dev/null
+status=$?
+[ $stopping -eq 1 ] && exit 0
+[ $reauth -eq 1 ] && { auth_expired; exit $EXIT_AUTH; }
+exit $status

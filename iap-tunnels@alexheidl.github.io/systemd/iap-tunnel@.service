@@ -1,0 +1,26 @@
+# Managed by the IAP Tunnels GNOME extension (iap-tunnels@alexheidl.github.io).
+# Remove this first line if you customise the file, so the extension stops updating it.
+#
+# One instance per tunnel: iap-tunnel@<id>.service reads ~/.config/iap-tunnels/<id>.env
+
+[Unit]
+Description=IAP tunnel %i
+Documentation=https://cloud.google.com/iap/docs/using-tcp-forwarding
+# Give up after 5 failed starts in 2 minutes (e.g. VM unreachable),
+# so the unit lands in "failed" and the extension can tell you.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=%E/iap-tunnels/%i.env
+# Wrapper around `gcloud compute start-iap-tunnel` that also watches the Google sign-in
+# (installed to ~/.local/share/iap-tunnels by the extension).
+ExecStart=%D/iap-tunnels/iap-tunnel-run
+Restart=on-failure
+# 75 = sign-in expired, 64 = bad config: restarting would not help.
+RestartPreventExitStatus=75 64
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,17 @@
+.iap-tunnel-item .iap-tunnel-title {
+  font-weight: bold;
+}
+
+.iap-tunnel-item .iap-tunnel-detail {
+  font-size: smaller;
+  font-feature-settings: "tnum";
+}
+
+.iap-tunnel-item .iap-tunnel-detail.iap-tunnel-failed {
+  color: #e66100;
+}
+
+.iap-tunnels-panel-label {
+  padding-left: 4px;
+  max-width: 10em;
+}

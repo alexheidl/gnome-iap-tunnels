@@ -1,0 +1,8 @@
+{
+  "uuid": "iap-tunnels@alexheidl.github.io",
+  "name": "IAP Tunnels",
+  "description": "Switch Google Cloud Identity-Aware Proxy (IAP) TCP tunnels on and off from Quick Settings, like a VPN. Each tunnel runs as a systemd user service wrapping `gcloud compute start-iap-tunnel`.",
+  "shell-version": ["48", "49", "50", "51"],
+  "url": "https://github.com/alexheidl/gnome-iap-tunnels",
+  "version-name": "0.1.0"
+}
